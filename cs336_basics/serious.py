@@ -68,11 +68,10 @@ def pre_tokenize_chunk(special_tokens: list[str], input_path: str, start: int, e
         return store
 
 
-def merge(dic: dict[tuple[bytes], int]):
-    # for each successive pair we assoc the count and a index of
+def get_pairs(pre_tok_dic: dict[tuple[bytes], int]):
     cow: dict[tuple[bytes], tuple[int, list[tuple[tuple[bytes], int, int]]]] = {}
     # for every pre_token.
-    for pre_token_key, value in dic.items():
+    for pre_token_key, value in pre_tok_dic.items():
         # for every successive_pair:
         for start in range(0, len(pre_token_key), 2):
             if start + 1 >= len(pre_token_key):
@@ -84,69 +83,93 @@ def merge(dic: dict[tuple[bytes], int]):
             before_count += value
             lst = lst + [(pre_token_key, start)]
             cow[new_key] = (before_count, lst)
+    return cow
 
-    max_pair_key = max(cow, key=lambda k: cow[k][0])
-    max_pair = cow[max_pair_key]
-    before_count, lst = max_pair
 
-    for z in range(0, 2):
-        max_pair_key = max(cow, key=lambda k: cow[k][0])
-        max_pair = cow[max_pair_key]
-        print("max_pair", max_pair_key)
-        before_count, lst = max_pair
-        # MERGE using max_pair's instance index.
-        together = (max_pair_key[0] + max_pair_key[1],)
-        size_a = len(max_pair_key[0])
-        size_b = len(max_pair_key[1])
-        for pre_token_key, start in lst:
-            # index of max-pair occurence.
-            pre_token_count = dic[pre_token_key]
+def merge_at_i(bytes: tuple[bytes], i: int):
+    return bytes[0:i] + (bytes[i] + bytes[i + 1],) + bytes[i + 2 :]
 
-            # merged the pair in the pre_token.
-            # LIES LIES don't merge trust me don't merge.
-            # new_pre_token_key = pre_token_key[0:i] + (pre_token_key[i] + pre_token_key[i + 1],) + pre_token_key[i + 2 :]
-            # dic[new_pre_token_key] = dic.pop(pre_token_key)
-            # process before pair
-            if start - 1 >= 0:
-                # fuck what if before there is something that was merged?
-                before_pair = (pre_token_key[start - 1], max_pair_key[1])
-                cow.pop(before_pair, None)
-                new_before_pair_key = tuple([pre_token_key[start - 1], together])
-                before_count, new_before_pair_key_idx = cow.get(new_before_pair_key, (0, []))
-                before_count += pre_token_count
-                new_before_pair_key_idx = new_before_pair_key_idx + [(pre_token_key, start - 1)]
-                cow[new_before_pair_key] = (before_count, new_before_pair_key_idx)
-            # process after pair
-            if start + 1 < len(new_pre_token_key):
-                after_pair = tuple([pre_token_key[start + 1], pre_token_key[start + 2]])
-                cow.pop(after_pair, None)
-                new_after_pair_key = tuple([new_pre_token_key[start], new_pre_token_key[start + 1]])
-                after_count, new_after_pair_key_idx = cow.get(new_after_pair_key, (0, []))
-                after_count += pre_token_count
-                new_after_pair_key_idx = new_after_pair_key_idx + [(new_pre_token_key, start)]
-                cow[new_after_pair_key] = (after_count, new_after_pair_key_idx)
-        cow.pop(max_pair_key)
+
+def update_dic(pre_tok_dic: dict[tuple[bytes], int], max_pair: tuple[bytes]):
+    # for every pre_token.
+    new_pre_tok_dic = {}
+    for pre_tok, value in pre_tok_dic.items():
+        marks = []
+        new_pre_tok = pre_tok
+        for start in range(0, len(pre_tok), 2):
+            if start + 1 >= len(pre_tok):
+                continue
+            pair = tuple([pre_tok[start], pre_tok[start + 1]])
+            if pair == max_pair:
+                marks.append(start)
+        for mark in marks:
+            new_pre_tok = merge_at_i(pre_tok, mark)
+        new_pre_tok_dic[new_pre_tok] = new_pre_tok_dic.get(new_pre_tok, 0) + value
+
+    return new_pre_tok_dic
+
+
+# not optimized for now.
+def merge(pre_tok_dic: dict[tuple[bytes], int], stopping_condition: int):
+    # for each successive pair we assoc the count and a index of
+    cow = get_pairs(pre_tok_dic)
+
+    max_pairs: list[tuple[bytes]] = []
+    while len(max_pairs) < stopping_condition:
+        max_pair = max(cow, key=lambda k: cow[k][0])
+        max_pairs.append(max_pair)
+        # again for every pre_token
+        pre_tok_dic = update_dic(pre_tok_dic, max_pair)
+        cow = get_pairs(pre_tok_dic)
+        # for key, value in pre_tok_dic.items():
+        #     # for every successive_pair:
+        #     for i in range(0, len(key), 2):
+        #         if i + 1 >= len(key):
+        #             continue
+        #         # set new_key to be the successive_pair of bytes
+        #         new_key = tuple([key[i], key[i + 1]])
+        #         if new_key == max_pair_key:
+        #             # everything before i in the dic
+        #             new_pre_token_key = key[0:i] + (key[i] + key[i + 1],) + key[i + 2 :]
+        #             print("old", key)
+        #             print("new", new_pre_token_key)
+        #             # remove all key and assign its value to the new key
+        #             pre_tok_dic[new_pre_token_key] = pre_tok_dic.pop(key)
+
+        #         # increment successive_pair of bytes by the frequency of words where they appear.
+        #         cow[new_key] = cow.get(new_key, 0) + value
+
+        # for pre_token_key, start in lst:
+        #     # index of max-pair occurence.
+        #     pre_token_count = dic[pre_token_key]
+
+        #     # merged the pair in the pre_token.
+        #     # LIES LIES don't merge trust me don't merge.
+        #     # new_pre_token_key = pre_token_key[0:i] + (pre_token_key[i] + pre_token_key[i + 1],) + pre_token_key[i + 2 :]
+        #     # dic[new_pre_token_key] = dic.pop(pre_token_key)
+        #     # process before pair
+        #     if start - 1 >= 0:
+        #         # fuck what if before there is something that was merged?
+        #         before_pair = (pre_token_key[start - 1], max_pair_key[1])
+        #         cow.pop(before_pair, None)
+        #         new_before_pair_key = tuple([pre_token_key[start - 1], together])
+        #         before_count, new_before_pair_key_idx = cow.get(new_before_pair_key, (0, []))
+        #         before_count += pre_token_count
+        #         new_before_pair_key_idx = new_before_pair_key_idx + [(pre_token_key, start - 1)]
+        #         cow[new_before_pair_key] = (before_count, new_before_pair_key_idx)
+        #     # process after pair
+        #     if start + 1 < len(new_pre_token_key):
+        #         after_pair = tuple([pre_token_key[start + 1], pre_token_key[start + 2]])
+        #         cow.pop(after_pair, None)
+        #         new_after_pair_key = tuple([new_pre_token_key[start], new_pre_token_key[start + 1]])
+        #         after_count, new_after_pair_key_idx = cow.get(new_after_pair_key, (0, []))
+        #         after_count += pre_token_count
+        #         new_after_pair_key_idx = new_after_pair_key_idx + [(new_pre_token_key, start)]
+        #         cow[new_after_pair_key] = (after_count, new_after_pair_key_idx)
+        # cow.pop(max_pair_key)
 
     # return [max_pair_key, cow[max_pair_key]]
 
-    # again for every pre_token
-    # for key, value in dic.items():
-    #     # for every successive_pair:
-    #     for i in range(0, len(key), 2):
-    #         if i + 1 >= len(key):
-    #             continue
-    #         # set new_key to be the successive_pair of bytes
-    #         new_key = tuple([key[i], key[i + 1]])
-    #         if new_key == max_pair_key:
-    #             # everything before i in the dic
-    #             new_pre_token_key = key[0:i] + (key[i] + key[i + 1],) + key[i + 2 :]
-    #             print("old", key)
-    #             print("new", new_pre_token_key)
-    #             # remove all key and assign its value to the new key
-    #             dic[new_pre_token_key] = dic.pop(key)
-
-    #         # increment successive_pair of bytes by the frequency of words where they appear.
-    #         cow[new_key] = cow.get(new_key, 0) + value
     return cow
 
 
@@ -158,10 +181,11 @@ def merge(dic: dict[tuple[bytes], int]):
 
 # 1 the jump to 3  then jump to 5 then over
 def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
+    stopping_condition = vocab_size - 256 - len(special_tokens)
     # open the input path
     with open(input_path, "rb") as f:
         # find the chunk boundaries
-        boundaries = find_chunk_boundaries(f, 4, "<|endoftext|>".encode("utf-8"))
+        boundaries = find_chunk_boundaries(f, 8, "<|endoftext|>".encode("utf-8"))
         with mp.Pool() as pool:
             results = pool.starmap(
                 pre_tokenize_chunk,
@@ -172,7 +196,7 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
         for d in results:
             combined.update(d)
 
-        return merge(combined)
+        return merge(combined, stopping_condition)
 
 
 # suppose the best pair was 'a' 't'
@@ -184,8 +208,12 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
 
 
 if __name__ == "__main__":
-    all_matches = train_bpe("./cs336_basics/TinyStories-valid.txt", 4, [])
-    # sample_keys = list(all_matches.keys())[:10]
-    # for k in sample_keys:
-    #     print(k, all_matches[k])
-    print(all_matches)
+    all_matches = train_bpe("./cs336_basics/TinyStories-valid.txt", 1000, [])
+    sample_keys = list(all_matches.keys())[:1]
+    for k in sample_keys:
+        print(k, all_matches[k])
+    # print(all_matches)
+
+    # res_bytes = tuple(bytes([c]) for c in "hello".encode("utf-8"))
+    # print("res_bytes", res_bytes)
+    # print(merge_at_i(res_bytes, 2))
