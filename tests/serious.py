@@ -3,6 +3,9 @@ import os
 import regex as re
 from typing import BinaryIO
 import multiprocessing as mp
+import cProfile
+import pstats
+from collections import Counter
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
@@ -54,9 +57,7 @@ def pre_tokenize_chunk(special_tokens: list[str], input_path: str, start: int, e
     with open(input_path, "rb") as f:
         f.seek(start)
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        sub_chunks = re.split(
-            "|".join([re.escape(tok) for tok in special_tokens + [re.escape("<|endoftext|>")]]), chunk
-        )
+        sub_chunks = re.split("|".join([re.escape(tok) for tok in special_tokens]), chunk)
         # run tokenization for each of the sub_chunks.
         iterators = [re.finditer(PAT, sub_chunk) for sub_chunk in sub_chunks]
         flattened_iterators = itertools.chain(*iterators)
@@ -68,19 +69,15 @@ def pre_tokenize_chunk(special_tokens: list[str], input_path: str, start: int, e
         return store
 
 
-def get_simple_pairs(pre_tok_dic: dict[tuple[bytes], int]):
-    cow: dict[tuple[bytes], int] = {}
-    # for every pre_token.
-    for pre_token_key, value in pre_tok_dic.items():
-        # for every successive_pair:
-        for start in range(0, len(pre_token_key), 2):
-            if start + 1 >= len(pre_token_key):
-                continue
-            # set new_key to be the successive_pair of bytes
-            new_key = pre_token_key[start] + pre_token_key[start + 1]
-            # increment successive_pair of bytes by the frequency of words where they appear.
-            cow[new_key] = cow.get(new_key, 0) + 1
-    return cow
+def get_all_simple_pairs(pre_tok_dic: dict[tuple[bytes], int]) -> dict[tuple[bytes, bytes], int]:
+    pair_count_dic = Counter()
+    for pre_token_key, count in pre_tok_dic.items():
+        if len(pre_token_key) < 2:
+            continue
+        for i in range(len(pre_token_key) - 1):
+            pair = (pre_token_key[i], pre_token_key[i + 1])
+            pair_count_dic[pair] += count
+    return dict(pair_count_dic)
 
 
 def merge_at_i(bytes: tuple[bytes], i: int):
@@ -88,38 +85,68 @@ def merge_at_i(bytes: tuple[bytes], i: int):
 
 
 def update_dic(pre_tok_dic: dict[tuple[bytes], int], max_pair: tuple[bytes, bytes]):
-    # for every pre_token.
     new_pre_tok_dic = {}
     for pre_tok, value in pre_tok_dic.items():
-        marks = []
-        new_pre_tok = pre_tok
-        for start in range(0, len(pre_tok), 2):
-            if start + 1 >= len(pre_tok):
-                continue
-            pair = (pre_tok[start], pre_tok[start + 1])
-            if pair == max_pair:
-                marks.append(start)
-        for mark in marks:
-            new_pre_tok = merge_at_i(pre_tok, mark)
-        new_pre_tok_dic[new_pre_tok] = new_pre_tok_dic.get(new_pre_tok, 0) + value
-
+        merged = []
+        i = 0
+        while i < len(pre_tok):
+            # Check if the current and next byte form the max_pair
+            if i < len(pre_tok) - 1 and (pre_tok[i], pre_tok[i + 1]) == max_pair:
+                # Merge the pair
+                merged.append(pre_tok[i] + pre_tok[i + 1])
+                i += 2  # Skip the next byte, as it's merged
+            else:
+                merged.append(pre_tok[i])
+                i += 1
+        merged_tuple = tuple(merged)
+        new_pre_tok_dic[merged_tuple] = new_pre_tok_dic.get(merged_tuple, 0) + value
     return new_pre_tok_dic
 
 
 # not optimized for now.
 def merge(pre_tok_dic: dict[tuple[bytes], int], stopping_condition: int):
-    cow = get_simple_pairs(pre_tok_dic)
-    # print("cow", cow)
-    # INSERT_YOUR_CODE
-    # Get top 5 key-value pairs from cow based on values (descending)
-    top5 = sorted(cow.items(), key=lambda x: x[1], reverse=True)[:5]
-    print("Top 5 pairs by frequency:", top5)
     max_pairs: list[tuple[bytes, bytes]] = []
+    # INSERT_YOUR_CODE
+    # Print the top 5 most frequent pairs and their counts
+    # top5 = sorted(cow.items(), key=lambda x: (-x[1], x[0]))[:5]
+    # print("Top 5 pairs:", top5)
     while len(max_pairs) < stopping_condition:
-        max_pair = max(cow, key=cow.get)
+        # print("-------------------")
+        # get all pairs in dic
+        cow = get_all_simple_pairs(pre_tok_dic)
+        # get the max pair
+        max_pair = max(cow, key=lambda pair: (cow[pair], pair))
+        # INSERT_YOUR_CODE
+        # print(f"------- Iteration {len(max_pairs)} -------")
+        # top5 = sorted(cow.items(), key=lambda x: (-x[1], x[0]))[:1]
+        # for pair, count in top5:
+        #     print(pair, count)
+        # print("-------")
+        # add the max pair
         max_pairs.append(max_pair)
+        # merge pair to dic
         pre_tok_dic = update_dic(pre_tok_dic, max_pair)
-        cow = get_simple_pairs(pre_tok_dic)
+        # --------------
+        # Print first 10 keys in pre_tok_dic that include 'h' and 'e' bytes in the key
+        # h_byte = b"i"
+        # e_byte = b"t"
+        # count = 0
+        # for k in pre_tok_dic:
+        #     for i in range(len(k) - 1):
+        #         if k[i] == h_byte and k[i + 1] == e_byte:
+        #             count += pre_tok_dic[k]
+        # print("Count of keys with consecutive 'i' and 't':", count)
+        # h_byte = b"o"
+        # e_byte = b"u"
+        # count = 0
+        # for k in pre_tok_dic:
+        #     for i in range(len(k) - 1):
+        #         if k[i] == h_byte and k[i + 1] == e_byte:
+        #             count += pre_tok_dic[k]
+        # print("Count of keys with consecutive 'o' and 'u':", count)
+        # ----------
+        # top5 = sorted(cow.items(), key=lambda x: (-x[1], x[0]))[:5]
+        # print("Top 5 pairs:", top5)
 
     return max_pairs
 
@@ -132,30 +159,32 @@ def train_bpe(
     # open the input path
     with open(input_path, "rb") as f:
         # find the chunk boundaries
-        boundaries = find_chunk_boundaries(f, 8, "<|endoftext|>".encode("utf-8"))
-        with mp.Pool() as pool:
+        boundaries = find_chunk_boundaries(f, 16, "<|endoftext|>".encode("utf-8"))
+        num_workers = min(mp.cpu_count(), len(boundaries) - 1)
+        with mp.Pool(processes=num_workers) as pool:
             results = pool.starmap(
                 pre_tokenize_chunk,
                 [(special_tokens, input_path, start, end) for start, end in zip(boundaries[:-1], boundaries[1:])],
             )
         # results = [pre_tokenize_chunk(chunk) for chunk in chunks]
         combined = {}
+
         for d in results:
-            combined.update(d)
+            for k, v in d.items():
+                combined[k] = combined.get(k, 0) + v
 
         max_pairs = merge(combined, stopping_condition)
         vocab: dict[int, bytes] = {}
         # single-bytes
         for i in range(0, 256):
-            vocab[i] = chr(i)
+            vocab[i] = bytes([i])
         # special_tokens
         for i, token in enumerate(special_tokens):
-            vocab[i + 256] = bytes(token.encode("utf-8"))
+            vocab[i + 256] = token.encode("utf-8")
 
         # vocab
         for i, (a, b) in enumerate(max_pairs):
             vocab[i + 256 + special_tokens_len] = a + b
-
         return (vocab, max_pairs)
 
 
@@ -168,11 +197,16 @@ def train_bpe(
 
 
 if __name__ == "__main__":
-    (vocab, max_pairs) = train_bpe("./tests/TinyStories-valid.txt", 400, [])
+    profiler = cProfile.Profile()
+    profiler.enable()
+    (vocab, max_pairs) = train_bpe("./tests/fixtures/tinystories_sample_5M.txt", 400, ["<|endoftext|>"])
     print("max_pairs", max_pairs)
+    profiler.disable()
+    stats = pstats.Stats(profiler).sort_stats("cumtime")
+    stats.print_stats(20)  # Show top 20 slowest functions
     # INSERT_YOUR_CODE
     # Print the first 10 items of res[0]
-    print("vocab", vocab)
+    # print("vocab", vocab)
     # print(all_matches)
 
     # res_bytes = tuple(bytes([c]) for c in "hello".encode("utf-8"))
