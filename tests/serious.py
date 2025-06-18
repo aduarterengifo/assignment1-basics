@@ -205,32 +205,32 @@ def merge(pre_tok_dic: Counter[tuple[bytes], int], stopping_condition: int):
                 if pair_to_count[pair] == 0:
                     del pair_to_count[pair]
                     del pair_to_tokens[pair]
-        # construct new merged_token.
-        new_pre_tok = []
-        i = 0
-        while i < len(pre_tok):
-            if i < len(pre_tok) - 1 and (pre_tok[i], pre_tok[i + 1]) == max_pair:
-                new_pre_tok.append(pre_tok[i] + pre_tok[i + 1])
-                i += 2
-            else:
-                new_pre_tok.append(pre_tok[i])
-                i += 1
-        new_pre_tok = tuple(new_pre_tok)
+            # construct new merged_token.
+            new_pre_tok = []
+            i = 0
+            while i < len(pre_tok):
+                if i < len(pre_tok) - 1 and (pre_tok[i], pre_tok[i + 1]) == max_pair:
+                    new_pre_tok.append(pre_tok[i] + pre_tok[i + 1])
+                    i += 2
+                else:
+                    new_pre_tok.append(pre_tok[i])
+                    i += 1
+            new_pre_tok = tuple(new_pre_tok)
 
-        # update dic.
-        pre_tok_dic[new_pre_tok] += count
-        pre_tok_dic[pre_tok] -= count
+            # update dic.
+            pre_tok_dic[new_pre_tok] += count
+            pre_tok_dic[pre_tok] -= count
 
-        # remove all together if appropriate
-        if pre_tok_dic[pre_tok] == 0:
-            del pre_tok_dic[pre_tok]
+            # remove all together if appropriate
+            if pre_tok_dic[pre_tok] == 0:
+                del pre_tok_dic[pre_tok]
 
-        for i in range(len(new_pre_tok) - 1):
-            pair = (new_pre_tok[i], new_pre_tok[i + 1])
-            pair_to_count[pair] += count
-            if pair not in pair_to_tokens:
-                pair_to_tokens[pair] = set()
-            pair_to_tokens[pair].add(new_pre_tok)
+            for i in range(len(new_pre_tok) - 1):
+                pair = (new_pre_tok[i], new_pre_tok[i + 1])
+                pair_to_count[pair] += count
+                if pair not in pair_to_tokens:
+                    pair_to_tokens[pair] = set()
+                pair_to_tokens[pair].add(new_pre_tok)
 
         # ------------ EFFICIENTLY UPDATE ----------------
         # ------------   APPEND MAX_PAIR  ----------------
