@@ -6,6 +6,8 @@ import multiprocessing as mp
 import cProfile
 import pstats
 from collections import Counter
+import heapq
+
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
@@ -59,63 +61,183 @@ def pre_tokenize_chunk(special_tokens: list[str], input_path: str, start: int, e
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
         sub_chunks = re.split("|".join([re.escape(tok) for tok in special_tokens]), chunk)
         # run tokenization for each of the sub_chunks.
-        iterators = [re.finditer(PAT, sub_chunk) for sub_chunk in sub_chunks]
+        PAT_RE = re.compile(PAT)
+        iterators = [PAT_RE.finditer(sub_chunk) for sub_chunk in sub_chunks]
         flattened_iterators = itertools.chain(*iterators)
-        store = {}
+        store = Counter()
         for match in flattened_iterators:
             res = match.group()
             res_bytes = tuple(bytes([c]) for c in res.encode("utf-8"))
-            store[res_bytes] = store.get(res_bytes, 0) + 1
+            store[res_bytes] += 1
         return store
 
 
-def get_all_simple_pairs(pre_tok_dic: dict[tuple[bytes], int]) -> dict[tuple[bytes, bytes], int]:
-    pair_count_dic = Counter()
+def get_all_simple_pairs(
+    pre_tok_dic: Counter[tuple[bytes], int],
+) -> tuple[dict[tuple[bytes, bytes], int], dict[tuple[bytes, bytes], set[tuple[bytes]]]]:
+    pair_to_count = Counter()
+    pair_to_tokens = {}
     for pre_token_key, count in pre_tok_dic.items():
         if len(pre_token_key) < 2:
             continue
         for i in range(len(pre_token_key) - 1):
             pair = (pre_token_key[i], pre_token_key[i + 1])
-            pair_count_dic[pair] += count
-    return dict(pair_count_dic)
+            pair_to_count[pair] += count
+            if pair not in pair_to_tokens:
+                pair_to_tokens[pair] = set()
+            pair_to_tokens[pair].add(pre_token_key)
+    return (pair_to_count, pair_to_tokens)
 
 
 def merge_at_i(bytes: tuple[bytes], i: int):
     return bytes[0:i] + (bytes[i] + bytes[i + 1],) + bytes[i + 2 :]
 
 
-def update_dic(pre_tok_dic: dict[tuple[bytes], int], max_pair: tuple[bytes, bytes]):
-    new_pre_tok_dic = {}
+def update_dic(
+    pre_tok_dic: Counter[tuple[bytes], int], max_pair: tuple[bytes, bytes], affected: set[tuple[bytes]]
+) -> Counter[tuple[bytes], int]:
+    new_pre_tok_dic = Counter()
     for pre_tok, value in pre_tok_dic.items():
-        merged = []
-        i = 0
-        while i < len(pre_tok):
-            # Check if the current and next byte form the max_pair
-            if i < len(pre_tok) - 1 and (pre_tok[i], pre_tok[i + 1]) == max_pair:
-                # Merge the pair
-                merged.append(pre_tok[i] + pre_tok[i + 1])
-                i += 2  # Skip the next byte, as it's merged
-            else:
-                merged.append(pre_tok[i])
-                i += 1
-        merged_tuple = tuple(merged)
-        new_pre_tok_dic[merged_tuple] = new_pre_tok_dic.get(merged_tuple, 0) + value
+        # for the words that changed.
+        if pre_tok in affected:
+            merged = []
+            i = 0
+            while i < len(pre_tok):
+                # Check if the current and next byte form the max_pair
+                if i < len(pre_tok) - 1 and (pre_tok[i], pre_tok[i + 1]) == max_pair:
+                    # Merge the pair
+                    merged.append(pre_tok[i] + pre_tok[i + 1])
+                    i += 2  # Skip the next byte, as it's merged
+                else:
+                    merged.append(pre_tok[i])
+                    i += 1
+            merged_tuple = tuple(merged)
+            new_pre_tok_dic[merged_tuple] += value
+        else:
+            new_pre_tok_dic[pre_tok] += value
     return new_pre_tok_dic
 
 
+# def affected_words(pre_tok_dic: Counter[tuple[bytes], int], max_pair: tuple[bytes, bytes]):
+#     affected = []
+#     for pre_tok, value in pre_tok_dic.items():
+#                 while i < len(pre_tok):
+#             # Check if the current and next byte form the max_pair
+#             if i < len(pre_tok) - 1 and (pre_tok[i], pre_tok[i + 1]) == max_pair:
+#                 # Merge the pair
+#                 merged.append(pre_tok[i] + pre_tok[i + 1])
+#                 i += 2  # Skip the next byte, as it's merged
+#             else:
+#                 merged.append(pre_tok[i])
+#                 i += 1
+def update(
+    pre_tok_dic: Counter[tuple[bytes], int],
+    pair_to_tokens: dict[tuple[bytes, bytes], set[tuple[bytes]]],
+    max_pair: tuple[bytes, bytes],
+    pair_to_count: dict[tuple[bytes, bytes], int],
+):
+    affected_pre_toks = pair_to_tokens[max_pair]
+    for pre_tok in affected_pre_toks:
+        count = pre_tok_dic[pre_tok]
+        for i in range(len(pre_tok) - 1):
+            # calculate pair
+            pair = (pre_tok[i], pre_tok[i + 1])
+            # decrement count from pair
+            pair_to_count[pair] -= count
+            # remove token from pairs_to_tokens
+            pair_to_tokens.pop(pre_tok, None)
+            # if pair doesn't occur anymore remove all together.
+            if pair_to_count[pair] == 0:
+                del pair_to_count[pair]
+                del pair_to_tokens[pair]
+    # construct new merged_token.
+    new_pre_tok = []
+    i = 0
+    while i < len(pre_tok):
+        if i < len(pre_tok) - 1 and (pre_tok[i], pre_tok[i + 1]) == max_pair:
+            new_pre_tok.append(pre_tok[i] + pre_tok[i + 1])
+            i += 2
+        else:
+            new_pre_tok.append(pre_tok[i])
+            i += 1
+    new_pre_tok = tuple(new_pre_tok)
+
+    # update dic.
+    pre_tok_dic[new_pre_tok] += count
+    pre_tok_dic[pre_tok] -= count
+
+    # remove all together if appropriate
+    if pre_tok_dic[pre_tok] == 0:
+        del pre_tok_dic[pre_tok]
+
+    for i in range(len(new_pre_tok) - 1):
+        pair = (new_pre_tok[i], new_pre_tok[i + 1])
+        pair_to_count[pair] += count
+        pair_to_tokens[pair].add(new_pre_tok)
+
+
 # not optimized for now.
-def merge(pre_tok_dic: dict[tuple[bytes], int], stopping_condition: int):
+def merge(pre_tok_dic: Counter[tuple[bytes], int], stopping_condition: int):
     max_pairs: list[tuple[bytes, bytes]] = []
     # INSERT_YOUR_CODE
     # Print the top 5 most frequent pairs and their counts
     # top5 = sorted(cow.items(), key=lambda x: (-x[1], x[0]))[:5]
     # print("Top 5 pairs:", top5)
+    (pair_to_count, pair_to_tokens) = get_all_simple_pairs(pre_tok_dic)
     while len(max_pairs) < stopping_condition:
         # print("-------------------")
         # get all pairs in dic
-        cow = get_all_simple_pairs(pre_tok_dic)
         # get the max pair
-        max_pair = max(cow, key=lambda pair: (cow[pair], pair))
+        max_pair = max(pair_to_count, key=lambda pair: (pair_to_count[pair], pair))
+
+        # ------------ EFFICIENTLY UPDATE ----------------
+        affected_pre_toks = set(pair_to_tokens[max_pair])
+        for pre_tok in affected_pre_toks:
+            count = pre_tok_dic[pre_tok]
+            for i in range(len(pre_tok) - 1):
+                # calculate pair
+                pair = (pre_tok[i], pre_tok[i + 1])
+                # decrement count from pair
+                pair_to_count[pair] -= count
+                # remove token from pairs_to_tokens
+                pair_to_tokens[pair].discard(pre_tok)
+                # if pair doesn't occur anymore remove all together.
+                if pair_to_count[pair] == 0:
+                    del pair_to_count[pair]
+                    del pair_to_tokens[pair]
+        # construct new merged_token.
+        new_pre_tok = []
+        i = 0
+        while i < len(pre_tok):
+            if i < len(pre_tok) - 1 and (pre_tok[i], pre_tok[i + 1]) == max_pair:
+                new_pre_tok.append(pre_tok[i] + pre_tok[i + 1])
+                i += 2
+            else:
+                new_pre_tok.append(pre_tok[i])
+                i += 1
+        new_pre_tok = tuple(new_pre_tok)
+
+        # update dic.
+        pre_tok_dic[new_pre_tok] += count
+        pre_tok_dic[pre_tok] -= count
+
+        # remove all together if appropriate
+        if pre_tok_dic[pre_tok] == 0:
+            del pre_tok_dic[pre_tok]
+
+        for i in range(len(new_pre_tok) - 1):
+            pair = (new_pre_tok[i], new_pre_tok[i + 1])
+            pair_to_count[pair] += count
+            if pair not in pair_to_tokens:
+                pair_to_tokens[pair] = set()
+            pair_to_tokens[pair].add(new_pre_tok)
+
+        # ------------ EFFICIENTLY UPDATE ----------------
+        # ------------   APPEND MAX_PAIR  ----------------
+        max_pairs.append(max_pair)
+        # ------------   APPEND MAX_PAIR  ----------------
+
+        # affected_pre_tok = pair_to_words[max_pair]
         # INSERT_YOUR_CODE
         # print(f"------- Iteration {len(max_pairs)} -------")
         # top5 = sorted(cow.items(), key=lambda x: (-x[1], x[0]))[:1]
@@ -123,9 +245,9 @@ def merge(pre_tok_dic: dict[tuple[bytes], int], stopping_condition: int):
         #     print(pair, count)
         # print("-------")
         # add the max pair
-        max_pairs.append(max_pair)
+        # max_pairs.append(max_pair)
         # merge pair to dic
-        pre_tok_dic = update_dic(pre_tok_dic, max_pair)
+        # pre_tok_dic = update_dic(pre_tok_dic, max_pair, pair_to_tokens)
         # --------------
         # Print first 10 keys in pre_tok_dic that include 'h' and 'e' bytes in the key
         # h_byte = b"i"
@@ -167,11 +289,10 @@ def train_bpe(
                 [(special_tokens, input_path, start, end) for start, end in zip(boundaries[:-1], boundaries[1:])],
             )
         # results = [pre_tokenize_chunk(chunk) for chunk in chunks]
-        combined = {}
+        combined = Counter()
 
         for d in results:
-            for k, v in d.items():
-                combined[k] = combined.get(k, 0) + v
+            combined.update(d)
 
         max_pairs = merge(combined, stopping_condition)
         vocab: dict[int, bytes] = {}
