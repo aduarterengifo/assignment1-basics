@@ -99,10 +99,10 @@ def merge(pre_tok_dic: Counter[tuple[bytes], int], stopping_condition: int):
     heapq.heapify(heap)
 
     while len(max_pairs) < stopping_condition and heap:
-        neg_count, max_pair = heapq.heappop(heap)
-        if max_pair not in pair_to_count or -neg_count != pair_to_count[max_pair]:
-            continue
-        # max_pair = max(pair_to_count, key=lambda pair: (pair_to_count[pair], pair))
+        # neg_count, max_pair = heapq.heappop(heap)
+        # if max_pair not in pair_to_count or -neg_count != pair_to_count[max_pair]:
+        #     continue
+        max_pair = max(pair_to_count, key=lambda pair: (pair_to_count[pair], pair))
         # max_pair = alt_max_pair
         max_pairs.append(max_pair)
 
@@ -204,6 +204,7 @@ if __name__ == "__main__":
     profiler.enable()
     (vocab, max_pairs) = train_bpe("./tests/fixtures/tinystories_sample_5M.txt", 400, ["<|endoftext|>"])
     print("max_pairs", max_pairs)
+    print("vocab", vocab)
     profiler.disable()
     stats = pstats.Stats(profiler).sort_stats("cumtime")
     stats.print_stats(20)  # Show top 20 slowest functions
